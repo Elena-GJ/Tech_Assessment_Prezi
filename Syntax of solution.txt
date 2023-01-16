@@ -1,0 +1,130 @@
+create table invoice_data (
+  account_id varchar,
+  invoice_period_from date,
+  invoice_period_until date,
+  invoice_days int,
+  invoice_amount bigint
+);
+
+copy invoice_data (
+  account_id,
+  invoice_period_from,
+  invoice_period_until,
+  invoice_days,
+  invoice_amount
+)
+from './invoice_data.tsv'
+delimiter '	'
+csv header;
+
+create table d_date (
+  date_name date,
+  date_weekday_name varchar,
+  date_is_weekend boolean,
+  date_number_in_month int,
+  year_key int
+);
+
+copy d_date (
+  date_name,
+  date_weekday_name,
+  date_is_weekend,
+  date_number_in_month,
+  year_key
+)
+from './d_date.tsv'
+delimiter '	'
+csv header;
+
+/*
+First model: We would like to build a simple report that every month
+can show us an annualized estimate of the total Team business value
+stream.
+For simplicity, in this first model we can think as if every invoice
+would cover a standard 365 days period
+*/
+with
+account_dates as (
+	select distinct account_id,
+		   generate_series(invoice_period_from, 
+	                       invoice_period_from + interval '1 year', 
+	                       interval '1 day')::date as frequency
+	  from invoice_data
+),
+
+invoice_period_per_day as (
+	select a.account_id,
+	       a.frequency,
+		   b.invoice_period_from,
+		   b.invoice_period_from + interval '1 year' as invoice_period_until,
+		   b.invoice_amount,
+		   b.invoice_days
+	  from account_dates a
+		inner join invoice_data b
+		   on a.account_id = b.account_id
+		  and a.frequency between b.invoice_period_from 
+	                          and b.invoice_period_from + interval '1 year'
+),
+
+daily_amount_per_account_id as (
+	select account_id,
+	       frequency,
+		   sum(invoice_amount::float / invoice_days) 
+		       filter 
+			   (where frequency between invoice_period_from
+									and invoice_period_until) as daily_amount
+	  from invoice_period_per_day
+	 group by 1,2
+)
+
+select left(frequency::varchar, 7) as month,
+	   sum(daily_amount) as total_annualized_amount
+  from daily_amount_per_account_id
+ group by 1
+ order by 1 asc;
+
+/* 
+Second model: Can you think of other ways to calculate the annualised 
+amounts on a monthly basis, given that harmonising invoices of 
+different length is a factor?
+*/
+with
+account_dates as (
+	select distinct account_id,
+		   generate_series(invoice_period_from, 
+	                       invoice_period_until, 
+	                       interval '1 day')::date as frequency
+	  from invoice_data
+	 order by 2 asc
+),
+
+invoice_period_per_day as (
+	select a.account_id,
+	       a.frequency,
+		   b.invoice_period_from,
+		   b.invoice_period_until,
+		   b.invoice_amount,
+		   b.invoice_days
+	  from account_dates a
+		inner join invoice_data b
+		   on a.account_id = b.account_id
+		  and a.frequency between b.invoice_period_from 
+	                          and b.invoice_period_until
+),
+
+daily_amount_per_account_id as (
+	select account_id,
+	       frequency,
+		   sum(invoice_amount::float / invoice_days) 
+		       filter 
+			   (where frequency between invoice_period_from
+									and invoice_period_until) as daily_amount
+	  from invoice_period_per_day
+	 group by 1,2
+)
+
+select left(frequency::varchar, 7) as month,
+	   sum(daily_amount) as total_annualized_amount
+  from daily_amount_per_account_id
+ group by 1
+ order by 1 asc;
